@@ -46,10 +46,14 @@ DEFAULT_FEE_RATE = 10
 
 
 class WalletWidget(QWidget):
-    def __init__(self, name, ledger):
+    def __init__(self, slot, ledger, get_saved_wallets=None,
+                 on_wallet_saved=None, on_name_change=None):
         super().__init__()
-        self.name = name
+        self.slot = slot
         self.ledger = ledger
+        self._get_saved_wallets = get_saved_wallets or (lambda: [])
+        self._on_wallet_saved = on_wallet_saved
+        self._on_name_change = on_name_change
         self.wallet_data = {}
         self.address_tables = {}
         self._private_keys_visible = False
@@ -89,8 +93,11 @@ class WalletWidget(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        lbl = QLabel(f"Кошелёк {self.name}")
-        lbl.setObjectName("walletTitle")
+        self.wallet_title_label = QLabel(f"Кошелёк {self.slot}")
+        self.wallet_title_label.setObjectName("walletTitle")
+
+        self.wallet_name_input = QLineEdit()
+        self.wallet_name_input.setPlaceholderText("Имя кошелька")
 
         self.word_count = QComboBox()
         self.word_count.addItems(["12 слов", "24 слова"])
@@ -109,14 +116,16 @@ class WalletWidget(QWidget):
         grid.setVerticalSpacing(4)
         grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)
-        grid.addWidget(QLabel("Фраза"), 0, 0)
-        grid.addWidget(self.word_count, 0, 1)
-        grid.addWidget(QLabel("Адреса"), 1, 0)
-        grid.addWidget(self.count_input, 1, 1)
-        grid.addWidget(QLabel("Аккаунт"), 2, 0)
-        grid.addWidget(self.account_input, 2, 1)
-        grid.addWidget(QLabel("BIP39"), 3, 0)
-        grid.addWidget(self.passphrase_input, 3, 1)
+        grid.addWidget(QLabel("Имя"), 0, 0)
+        grid.addWidget(self.wallet_name_input, 0, 1)
+        grid.addWidget(QLabel("Фраза"), 1, 0)
+        grid.addWidget(self.word_count, 1, 1)
+        grid.addWidget(QLabel("Адреса"), 2, 0)
+        grid.addWidget(self.count_input, 2, 1)
+        grid.addWidget(QLabel("Аккаунт"), 3, 0)
+        grid.addWidget(self.account_input, 3, 1)
+        grid.addWidget(QLabel("BIP39"), 4, 0)
+        grid.addWidget(self.passphrase_input, 4, 1)
 
         self.generate_button = QPushButton("Создать")
         self.generate_button.setObjectName("generateBtn")
@@ -142,7 +151,7 @@ class WalletWidget(QWidget):
         self.mnemonic_view.setPlaceholderText("Вставьте фразу или создайте кошелёк")
         self.mnemonic_view.setMaximumHeight(100)
 
-        layout.addWidget(lbl)
+        layout.addWidget(self.wallet_title_label)
         layout.addLayout(grid)
         layout.addSpacing(2)
         layout.addLayout(btn_row)
@@ -379,6 +388,11 @@ class WalletWidget(QWidget):
     # ── Wallet creation / restoration ──
 
     def create_wallet(self):
+        wallet_name = self.wallet_name_input.text().strip()
+        if not wallet_name:
+            QMessageBox.warning(self, "Ошибка", "Введите имя кошелька.")
+            return
+
         params = self._validate_inputs()
         if params is None:
             return
@@ -423,11 +437,25 @@ class WalletWidget(QWidget):
             )
             return
 
+        passphrase = self.passphrase_input.text()
+        seed = gen.to_seed(words, passphrase=passphrase)
+        fp = fingerprint(seed)
+
+        from storage import find_wallet_by_fingerprint
+        saved = find_wallet_by_fingerprint(self._get_saved_wallets(), fp)
+        if saved:
+            self.wallet_name_input.setText(saved.get("name", ""))
+            self.count_input.setText(str(saved.get("addresses_per_standard", DEFAULT_ADDR_COUNT)))
+            self.account_input.setText(str(saved.get("account", DEFAULT_ACCOUNT)))
+
+        if not self.wallet_name_input.text().strip():
+            QMessageBox.warning(self, "Ошибка", "Введите имя кошелька.")
+            return
+
         params = self._validate_inputs()
         if params is None:
             return
         count, account = params
-        passphrase = self.passphrase_input.text()
 
         self.console.clear()
 
@@ -439,11 +467,15 @@ class WalletWidget(QWidget):
         self.log("─────────────────────────────────────────────")
         self.log(f"  Фраза: {len(words.split())} слов, контрольная сумма совпала.")
         self.log("  Одна мнемоника → один seed → одни и те же ключи и адреса.")
+        if saved:
+            self.log(f"  Найден сохранённый кошелёк: «{saved.get('name', '')}»")
+        else:
+            self.log("  Сохранённый кошелёк не найден — создаётся новый.")
         self.log("")
 
-        self._build_wallet(words, passphrase, count, account)
+        self._build_wallet(words, passphrase, count, account, seed=seed)
 
-    def _build_wallet(self, words, passphrase, count, account):
+    def _build_wallet(self, words, passphrase, count, account, seed=None):
         gen = Mnemonic("english")
 
         self.log("Шаг 2 · Seed (BIP39)")
@@ -454,7 +486,8 @@ class WalletWidget(QWidget):
         else:
             self.log("  BIP39-фраза не задана (пустая по умолчанию).")
 
-        seed = gen.to_seed(words, passphrase=passphrase)
+        if seed is None:
+            seed = gen.to_seed(words, passphrase=passphrase)
         fp = fingerprint(seed)
         self.log(f"  Seed: {len(seed)} байт. Отпечаток: {fp}")
         self.log("  Отпечаток — первые 64 бита SHA-256 от seed.")
@@ -552,6 +585,24 @@ class WalletWidget(QWidget):
         self.send_btn.setEnabled(True)
 
         self._update_all()
+
+        display_name = self.wallet_name_input.text().strip() or f"Кошелёк {self.slot}"
+        self.wallet_title_label.setText(display_name)
+
+        wallet_info = {
+            "name": display_name,
+            "mnemonic": words,
+            "word_count": len(words.split()),
+            "passphrase": passphrase,
+            "account": account,
+            "addresses_per_standard": count,
+            "seed_fingerprint": fp,
+            "created_at": created_at,
+        }
+        if self._on_wallet_saved:
+            self._on_wallet_saved(wallet_info)
+        if self._on_name_change:
+            self._on_name_change(self.slot, display_name)
 
     # ── Transactions ──
 

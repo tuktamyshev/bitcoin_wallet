@@ -66,3 +66,10 @@ class Ledger:
         self.history.append(tx)
         self._notify()
         return tx
+
+    def export_state(self):
+        return {"balances": dict(self.balances), "history": list(self.history)}
+
+    def import_state(self, state):
+        self.balances = state.get("balances", {})
+        self.history = state.get("history", [])

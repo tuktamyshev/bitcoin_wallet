@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+import storage
 from ledger import Ledger
 from wallet_widget import WalletWidget
 
@@ -17,7 +18,10 @@ class App(QWidget):
         self.setWindowTitle("Bitcoin HD-кошелёк — Лаборатория")
         self.setMinimumSize(1100, 820)
 
+        self.data = storage.load_data()
         self.ledger = Ledger()
+        self.ledger.import_state(self.data.get("ledger", {}))
+
         self._split = False
         self._active = 0
 
@@ -56,8 +60,20 @@ class App(QWidget):
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setChildrenCollapsible(False)
 
-        self.wallet1 = WalletWidget("A", self.ledger)
-        self.wallet2 = WalletWidget("B", self.ledger)
+        saved_wallets = lambda: self.data.get("wallets", [])
+
+        self.wallet1 = WalletWidget(
+            "A", self.ledger,
+            get_saved_wallets=saved_wallets,
+            on_wallet_saved=self._on_wallet_saved,
+            on_name_change=self._on_name_change,
+        )
+        self.wallet2 = WalletWidget(
+            "B", self.ledger,
+            get_saved_wallets=saved_wallets,
+            on_wallet_saved=self._on_wallet_saved,
+            on_name_change=self._on_name_change,
+        )
 
         self.splitter.addWidget(self.wallet1)
         self.splitter.addWidget(self.wallet2)
@@ -65,8 +81,25 @@ class App(QWidget):
         root.addLayout(toolbar)
         root.addWidget(self.splitter)
 
+        self.ledger.add_listener(self._auto_save_ledger)
+
         self._apply_view()
         self._apply_styles()
+
+    def _on_wallet_saved(self, wallet_info):
+        storage.upsert_wallet(self.data, wallet_info)
+        self.data["ledger"] = self.ledger.export_state()
+        storage.save_data(self.data)
+
+    def _on_name_change(self, slot, name):
+        if slot == "A":
+            self.btn_a.setText(name)
+        else:
+            self.btn_b.setText(name)
+
+    def _auto_save_ledger(self):
+        self.data["ledger"] = self.ledger.export_state()
+        storage.save_data(self.data)
 
     def _select_wallet(self, idx):
         if self._split:
