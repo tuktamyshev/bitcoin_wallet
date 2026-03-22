@@ -1,0 +1,5 @@
+PyQt5
+mnemonic
+ecdsa
+base58
+bech32
